@@ -1248,6 +1248,102 @@ def run_scenario(
     raise ValueError(f"Unknown policy '{policy}'.")
 
 
+# ─── Greedy Heuristic: Interval Graph Coloring ────────────────────────────────
+
+def solve_greedy_heuristic(
+    appts_df,
+    candidate_rooms,
+    keep_no_shows=False,
+    scenario_name="Greedy Heuristic – Interval Graph Coloring",
+):
+    """
+    Greedy interval-graph coloring heuristic for room assignment.
+
+    Algorithm:
+    - Process appointments day by day.
+    - Within each day, sort appointments by start time (earliest-start-first).
+    - Assign each appointment to the first available room (one whose last
+      assigned appointment has already ended by the time the current one starts).
+    - If no room is free, open a new room.
+
+    This is a classical O(n log n) greedy algorithm that is known to be optimal
+    for pure interval scheduling (no additional constraints). It serves as a
+    fast lower-bound benchmark and motivates why MIP is needed when policy
+    constraints (clusters, room caps, provider continuity) are layered on top.
+
+    Returns a result dict in the same format as the MIP solvers so it can be
+    included directly in comparison tables and charts.
+    """
+    appts_df = appts_df.copy()
+    overlap_pairs = build_overlap_pairs(appts_df)
+    same_provider_overlap_pairs = build_same_provider_overlap_pairs(appts_df)
+
+    all_candidate_rooms = list(candidate_rooms)
+    assignments = []  # list of {appt_id, Assigned Room}
+    rooms_used_global = set()
+
+    for day, day_group in appts_df.groupby("day_str"):
+        # Sort by start time; break ties by longest-duration-first (reduces fragmentation).
+        day_sorted = day_group.sort_values(
+            ["Appt Start", "Appt Duration"], ascending=[True, False]
+        )
+
+        # room_end_time[room] = the earliest time the room is free again.
+        room_end_time = {}  # room_name -> pd.Timestamp
+
+        for _, row in day_sorted.iterrows():
+            appt_start = row["Appt Start"]
+            appt_end = row["Appt End"]
+            assigned = None
+
+            # Find the first room that is free at appt_start.
+            for room in all_candidate_rooms:
+                if room not in room_end_time or room_end_time[room] <= appt_start:
+                    assigned = room
+                    room_end_time[room] = appt_end
+                    break
+
+            # If no candidate room is free, we cannot assign (should not happen
+            # with 16 rooms and realistic data, but handle gracefully).
+            if assigned is None:
+                assigned = f"OVERFLOW_{len(room_end_time) + 1}"
+
+            rooms_used_global.add(assigned)
+            assignments.append({"appt_id": row["appt_id"], "Assigned Room": assigned})
+
+    assign_df = pd.DataFrame(assignments)
+    assignments_df = appts_df.merge(assign_df, on="appt_id", how="left")
+
+    rooms_used = sorted(
+        [r for r in rooms_used_global if not r.startswith("OVERFLOW")],
+        key=lambda r: int(r.split()[-1]) if r.split()[-1].isdigit() else 999,
+    )
+    overflow_rooms = [r for r in rooms_used_global if r.startswith("OVERFLOW")]
+    rooms_used += overflow_rooms
+    n_rooms = len(rooms_used_global)
+
+    result = _base_result_dict(
+        scenario_name,
+        "greedy_heuristic_interval_coloring",
+        keep_no_shows,
+        appts_df,
+        overlap_pairs,
+        same_provider_overlap_pairs,
+    )
+    result["solver_status"] = "Heuristic"
+    result["feasible"] = True
+    result["objective_value"] = n_rooms
+    result["used_rooms"] = rooms_used
+    result["assignments_df"] = assignments_df
+    result["provider_day_room_usage_df"] = build_provider_day_room_summary(assignments_df)
+    result["notes"] = (
+        f"Greedy earliest-start-first interval coloring. "
+        f"Rooms used = {n_rooms}. No solver invoked — O(n log n) heuristic. "
+        f"Does not enforce policy constraints (clusters, provider caps, etc.)."
+    )
+    return result
+
+
 def build_comparison_df(results):
     """Create a compact scenario comparison table."""
     rows = []
