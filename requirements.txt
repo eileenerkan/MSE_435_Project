@@ -1,0 +1,9 @@
+pulp>=2.7
+pandas>=2.0
+numpy>=1.24,<2.0
+python-docx>=1.1
+matplotlib>=3.7
+seaborn>=0.13
+scipy>=1.11
+tabulate>=0.9
+jinja2>=3.1
