@@ -1,0 +1,2 @@
+,coverage_rate,rooms_used,avg_rooms_used_per_day,avg_provider_day_length,total_travel_distance,avg_room_utilization,idle_time_minutes,room_conflict_count,room_switches_per_provider_day,no_show_adjusted_utilization
+Optimal,1.0,16,15.5,297.46031746031747,33.2,0.38081896551724137,10745.0,0,0.8571428571428571,0.9245742092457421
