@@ -20,6 +20,8 @@ def load_and_prepare_appointments(csv_path, keep_no_shows=False):
     - drop cancelled appointments
     - drop deleted appointments
     - optionally drop no-shows
+    - drop ADMIN TIME appointments
+    - drop appointments on 2025-11-11 (Tuesday Week 1 — clinic closed)
     - build scheduled start/end timestamps from Appt Date + Appt Time + Appt Duration
     """
     df = pd.read_csv(csv_path)
@@ -38,7 +40,12 @@ def load_and_prepare_appointments(csv_path, keep_no_shows=False):
     if not keep_no_shows and "No Show Appts" in df.columns:
         df = df[df["No Show Appts"] != "Y"].copy()
 
+    if "Appt Type" in df.columns:
+        df = df[df["Appt Type"].str.upper() != "ADMIN TIME"].copy()
+
     df["Appt Date"] = pd.to_datetime(df["Appt Date"], format="%m-%d-%Y", errors="coerce")
+    df = df[df["Appt Date"] != pd.Timestamp("2025-11-11")].copy()
+
     df["Appt Time"] = df["Appt Time"].astype(str).str.strip()
     df["Appt Start"] = pd.to_datetime(
         df["Appt Date"].dt.strftime("%Y-%m-%d") + " " + df["Appt Time"],

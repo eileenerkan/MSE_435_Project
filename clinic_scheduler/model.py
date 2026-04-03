@@ -19,7 +19,7 @@ LOGGER = logging.getLogger(__name__)
 ALPHA = 0.0
 BETA = 1.0
 UNCOVERED_APPOINTMENT_PENALTY = 1000.0
-FINAL_ILP_TIMEOUT_SECONDS = 600
+FINAL_ILP_TIMEOUT_SECONDS = 120
 INITIAL_ROOM_MODES = ["assigned", "nearest_3", "nearest_6", "all_rooms"]
 PRICING_ROOM_MODES = ["room_assigned", "room_nearest", "room_cluster_2", "room_cluster_3", "room_cluster_4"]
 MIN_INITIAL_COLUMNS_PER_PROVIDER_DAY = 4
@@ -457,7 +457,7 @@ class ColumnGenerator:
             problem += constraint, name
             room_constraints[(date_str, room, slot)] = problem.constraints[name]
 
-        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=120)
+        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=30)
         problem.solve(solver)
         duals: dict[str, float] = {}
         for appointment_id, constraint in coverage_constraints.items():
@@ -514,7 +514,7 @@ class ColumnGenerator:
         return float(column.cost - dual_sum)
 
 
-    def solve(self, max_iter: int = 50) -> Solution:
+    def solve(self, max_iter: int = 30) -> Solution:
         """Run column generation and finalize with an ILP over generated columns."""
         self.build_initial_columns()
         if not self.all_columns:

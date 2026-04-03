@@ -313,14 +313,18 @@ def compare_policies_table(results: dict[str, Solution], output_path: str) -> pd
         "no_show_adjusted_utilization",
         "expected_utilization",
         "robustness",
+        "buffer_absorption_rate",
     }
 
     def _highlight(series: pd.Series) -> list[str]:
         best = series.max() if series.name in maximize_columns else series.min()
         return ["font-weight: bold" if value == best else "" for value in series]
 
-    styled = table.style.format(precision=4).apply(_highlight, axis=0)
-    html_path.write_text(styled.to_html(), encoding="utf-8")
+    try:
+        styled = table.style.format(precision=4).apply(_highlight, axis=0)
+        html_path.write_text(styled.to_html(), encoding="utf-8")
+    except AttributeError:
+        html_path.write_text(table.to_html(), encoding="utf-8")
     return table
 
 

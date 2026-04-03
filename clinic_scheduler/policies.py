@@ -87,14 +87,88 @@ def policy_c_blocked_days(blocked_schedule: dict[str, list[str]]) -> dict[str, A
     return {"name": "Policy C", "blocked_schedule": normalized}
 
 
-def policy_d_admin_buffer(use_admin_for_appts: bool = True) -> dict[str, Any]:
+def policy_d_admin_buffer() -> dict[str, Any]:
     """
-    Allow appointments already booked in admin windows to keep their fixed times.
+    Policy D: solve identically to Optimal, then post-process to flag appointments
+    whose end time falls within 15 minutes before an admin window boundary and
+    analyse whether the admin buffer absorbs potential overruns.
     """
+    return {"name": "Policy D"}
+
+
+# Admin window start boundaries (minutes from midnight) per weekday index.
+# Mon–Thu (0–3): 9:30, 11:30, 13:00, 16:30
+# Fri (4):       8:30, 11:30, 13:00, 15:00
+ADMIN_BOUNDARIES: dict[int, list[int]] = {
+    0: [9 * 60 + 30, 11 * 60 + 30, 13 * 60, 16 * 60 + 30],
+    1: [9 * 60 + 30, 11 * 60 + 30, 13 * 60, 16 * 60 + 30],
+    2: [9 * 60 + 30, 11 * 60 + 30, 13 * 60, 16 * 60 + 30],
+    3: [9 * 60 + 30, 11 * 60 + 30, 13 * 60, 16 * 60 + 30],
+    4: [8 * 60 + 30, 11 * 60 + 30, 13 * 60, 15 * 60],
+}
+
+# Admin window durations in minutes, indexed to match ADMIN_BOUNDARIES order.
+# Mon–Thu: 30, 30, 60, 30  |  Fri: 30, 30, 60, 30
+ADMIN_WINDOW_DURATIONS: dict[int, list[int]] = {
+    0: [30, 30, 60, 30],
+    1: [30, 30, 60, 30],
+    2: [30, 30, 60, 30],
+    3: [30, 30, 60, 30],
+    4: [30, 30, 60, 30],
+}
+
+AT_RISK_WINDOW_MINUTES = 15
+
+
+def compute_admin_buffer_analysis(schedule_df: pd.DataFrame) -> dict[str, Any]:
+    """
+    Post-process a solved schedule to identify appointments at risk of overrunning
+    into an admin window and assess whether the buffer absorbs the overrun.
+
+    An appointment is *at risk* if its end_min falls in the half-open interval
+    (boundary - AT_RISK_WINDOW_MINUTES, boundary].
+
+    The admin window *absorbs* the overrun if its duration is >= 15 minutes
+    (i.e. the full overrun fits inside the window).
+
+    Returns a dict with keys:
+        at_risk_appointments      – int
+        absorbed_by_buffer        – int
+        unabsorbed_conflicts      – int
+        buffer_absorption_rate    – float  (absorbed / at_risk, or 1.0 if none at risk)
+    """
+    if schedule_df.empty:
+        return {
+            "at_risk_appointments": 0,
+            "absorbed_by_buffer": 0,
+            "unabsorbed_conflicts": 0,
+            "buffer_absorption_rate": 1.0,
+        }
+
+    at_risk = 0
+    absorbed = 0
+
+    for _, row in schedule_df.iterrows():
+        end_min = int(row["end_min"])
+        day_of_week = pd.Timestamp(row["date"]).dayofweek
+        boundaries = ADMIN_BOUNDARIES[day_of_week]
+        durations = ADMIN_WINDOW_DURATIONS[day_of_week]
+
+        for boundary, window_duration in zip(boundaries, durations):
+            if boundary - AT_RISK_WINDOW_MINUTES < end_min <= boundary:
+                at_risk += 1
+                if window_duration >= AT_RISK_WINDOW_MINUTES:
+                    absorbed += 1
+                break  # count each appointment at most once
+
+    unabsorbed = at_risk - absorbed
+    rate = (absorbed / at_risk) if at_risk > 0 else 1.0
+
     return {
-        "name": "Policy D",
-        "allow_admin_overflow": use_admin_for_appts,
-        "respect_blocked_periods": True,
+        "at_risk_appointments": at_risk,
+        "absorbed_by_buffer": absorbed,
+        "unabsorbed_conflicts": unabsorbed,
+        "buffer_absorption_rate": round(rate, 4),
     }
 
 

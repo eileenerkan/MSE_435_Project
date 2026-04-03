@@ -15,6 +15,7 @@ from .data_loader import DAY_NAMES, build_distance_matrix, load_appointments, lo
 from .model import ColumnGenerator, Solution
 from .policies import (
     build_docx_blocked_schedule,
+    compute_admin_buffer_analysis,
     compute_overbooking_metrics,
     policy_a_single_room,
     policy_b_cluster_rooms,
@@ -39,6 +40,13 @@ LOGGER = logging.getLogger(__name__)
 
 HISTORICAL_BASELINE = "Historical Baseline"
 OPTIMAL_POLICY = "Optimal"
+
+# Additional provider-day blocks applied on top of DOCX availability for Policy C (Week 1).
+# Format: {provider: [day_name, ...]}
+WEEK1_EXTRA_BLOCKS: dict[str, list[str]] = {
+    "HPW114": ["Monday", "Thursday"],
+    "HPW101": ["Wednesday"],
+}
 
 
 def configure_logging() -> None:
@@ -85,6 +93,14 @@ def enrich_solution(
     if "buffer_slots" in policy_params:
         robustness = estimate_robustness(solution.schedule_df, appointments_df, int(policy_params.get("robustness_trials", 1000)))
         extra_kpis["robustness"] = robustness
+    if policy_params.get("name") == "Policy D":
+        buffer_analysis = compute_admin_buffer_analysis(solution.schedule_df)
+        extra_kpis.update(buffer_analysis)
+        print("\nPolicy D — Admin Buffer Analysis:")
+        print(f"  At-risk appointments (end within 15 min of admin boundary): {buffer_analysis['at_risk_appointments']}")
+        print(f"  Absorbed by admin buffer:   {buffer_analysis['absorbed_by_buffer']}")
+        print(f"  Unabsorbed conflicts:        {buffer_analysis['unabsorbed_conflicts']}")
+        print(f"  Buffer absorption rate:      {buffer_analysis['buffer_absorption_rate']:.1%}\n")
     solution.kpis.update(extra_kpis)
     solution.kpis = compute_kpis(solution, appointments_df)
     return solution
@@ -193,6 +209,28 @@ def render_historical_outputs(
     return solution
 
 
+def _drop_blocked_day_appointments(
+    appointments_df: pd.DataFrame,
+    policy_params: dict[str, Any],
+) -> pd.DataFrame:
+    """Remove appointments on provider-days blocked by the policy and report drops."""
+    blocked_schedule = policy_params.get("blocked_schedule", {})
+    if not blocked_schedule:
+        return appointments_df.copy()
+    day_name_col = appointments_df["date"].dt.day_name()
+    drop_mask = appointments_df.apply(
+        lambda row: day_name_col[row.name] in blocked_schedule.get(row["provider"], []),
+        axis=1,
+    )
+    dropped = appointments_df[drop_mask]
+    if not dropped.empty:
+        print("\nPolicy C — appointments dropped due to blocked provider-days:")
+        for (provider, day), grp in dropped.groupby([dropped["provider"], day_name_col[drop_mask]]):
+            print(f"  {provider} on {day}: {len(grp)} appointments dropped")
+        print(f"  Total dropped: {len(dropped)} / {len(appointments_df)}\n")
+    return appointments_df[~drop_mask].copy().reset_index(drop=True)
+
+
 def run_single_policy(
     appointments_df: pd.DataFrame,
     room_assignments: dict[str, dict[str, dict[str, Any]]],
@@ -202,7 +240,8 @@ def run_single_policy(
 ) -> Solution:
     """Solve one fixed-time room-assignment policy scenario."""
     LOGGER.info("Running %s", policy_name)
-    policy_appointments_df = filter_appointments_for_policy(appointments_df, policy_params)
+    policy_appointments_df = _drop_blocked_day_appointments(appointments_df, policy_params)
+    policy_appointments_df = filter_appointments_for_policy(policy_appointments_df, policy_params)
     generator = ColumnGenerator(
         appointments_df=policy_appointments_df,
         room_assignments=room_assignments,
@@ -219,6 +258,7 @@ def available_policies(
     room_assignments: dict[str, dict[str, dict[str, Any]]],
     dist_matrix: np.ndarray,
     week_number: int,
+    policy_b_threshold: float = 3.0,
 ) -> dict[str, dict[str, Any]]:
     """Build all named policy parameter dictionaries."""
     blocked_schedule = build_docx_blocked_schedule(room_assignments, week_number)
@@ -235,12 +275,17 @@ def available_policies(
         ]["start_min"].tolist()
     )
 
+    if week_number == 1:
+        for provider, days in WEEK1_EXTRA_BLOCKS.items():
+            existing = blocked_schedule.get(provider, [])
+            blocked_schedule[provider] = sorted(set(existing) | set(days))
+
     return {
         OPTIMAL_POLICY: {},
         "Policy A": policy_a_single_room(room_assignments, appointments_df, dist_matrix),
-        "Policy B": policy_b_cluster_rooms(dist_matrix),
+        "Policy B": policy_b_cluster_rooms(dist_matrix, proximity_threshold=policy_b_threshold),
         "Policy C": policy_c_blocked_days(blocked_schedule),
-        "Policy D": {**policy_d_admin_buffer(True), "admin_overflow_minutes": admin_overflow_minutes},
+        "Policy D": policy_d_admin_buffer(),
         "Policy E": policy_e_overbooking(appointments_df),
         "Policy F": policy_f_uncertainty_buffer(),
     }
@@ -272,9 +317,10 @@ def run_week(
     dist_matrix: np.ndarray,
     output_root: Path,
     requested_policy: str,
+    policy_b_threshold: float = 3.0,
 ) -> dict[str, Solution]:
     """Run all requested policy scenarios for a week."""
-    policy_map = available_policies(appointments_df, room_assignments, dist_matrix, week_number)
+    policy_map = available_policies(appointments_df, room_assignments, dist_matrix, week_number, policy_b_threshold=policy_b_threshold)
     resolved_policy = resolve_requested_policy(requested_policy, policy_map)
 
     results: dict[str, Solution] = {}
@@ -318,6 +364,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--week2-csv", default="/Users/eileenerkan/Desktop/435_Project/AppointmentDataWeek2.csv")
     parser.add_argument("--week1-docx", default="/Users/eileenerkan/Desktop/435_Project/ProviderRoomAssignmentWeek1.docx")
     parser.add_argument("--week2-docx", default="/Users/eileenerkan/Desktop/435_Project/ProviderRoomAssignmentWeek2.docx")
+    parser.add_argument("--threshold", type=float, default=3.0, help="Proximity threshold for Policy B cluster rooms (default: 3.0).")
     return parser.parse_args()
 
 
@@ -343,6 +390,7 @@ def main() -> None:
             dist_matrix=dist_matrix,
             output_root=output_root,
             requested_policy=args.policy,
+            policy_b_threshold=args.threshold,
         )
 
 
